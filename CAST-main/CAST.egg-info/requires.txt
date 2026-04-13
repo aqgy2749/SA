@@ -1,0 +1,16 @@
+torch
+matplotlib
+seaborn
+scikit-learn
+h5py
+statsmodels
+tqdm
+geopandas
+Rtree
+scanpy
+libpysal
+ipython
+jupyterlab
+jupyter
+numpy
+pandas

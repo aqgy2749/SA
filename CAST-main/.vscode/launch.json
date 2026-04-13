@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: Train Model",
+            "type": "debugpy",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "program": "/p1/zulab_users/jtian/my_jupyter/SA/CAST-main/demo/demo2_CAST_Stack_Align_S4_to_S1/cast_stack_5.py",
+            "python": "/p1/zulab_users/jtian/anaconda3/envs/my_NewSA_py39/bin/python",
+            "args": [],
+            "cwd": "/p1/zulab_users/jtian/my_jupyter/SA/CAST-main/demo/demo2_CAST_Stack_Align_S4_to_S1",
+            "stopOnEntry": false,
+            "justMyCode": true
+        }
+    ]
+}
