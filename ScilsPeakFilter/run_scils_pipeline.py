@@ -7,7 +7,7 @@ from scils_peak_pkg import MeanSpectraConfig, PeakWindowConfig, PipelineConfig, 
 # 只改这里：路径和参数区
 # =========================================================
 PROJECT_DIR = Path("/p2/zulab/jtian/data/SA/03_removeLow-qualityPeaks/ScilsPeakFilter/")
-ROI_DIR = "/p2/zulab/jtian/data/SA/03_removeLow-qualityPeaks/imzML/"
+ROI_DIR =  Path("/p2/zulab/jtian/data/SA/03_removeLow-qualityPeaks/imzML/")
 OUT_DIR = PROJECT_DIR / "output_run_scils_pipeline"
 
 INPUTS = [
@@ -28,7 +28,7 @@ mean_cfg = MeanSpectraConfig(
     labels=LABELS,
     out=MEAN_SPECTRA_CSV,
     force_processed=True,
-    mz_step=0.001,
+    mz_step=0.0001,
     processed_projection="interp",   # 你当前想模拟 SCiLS-like 公共轴平均，用 interp
 )
 
@@ -36,12 +36,12 @@ peak_cfg = PeakWindowConfig(
     featurelist=FEATURELIST,
     mean_spectra=MEAN_SPECTRA_CSV,
     outdir=str(OUT_DIR),
-    do_smooth=True,
+    do_smooth=False,
     do_baseline=False,
     smooth_window=11,
     smooth_polyorder=3,
     baseline_window=101,
-    search_ppm=30.0,
+    search_ppm=10.0,
     prominence_frac=0.05,
     snr_threshold=3.0,
     fwhm_min_ppm=3.0,
