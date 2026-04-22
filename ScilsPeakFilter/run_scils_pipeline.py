@@ -19,7 +19,7 @@ INPUTS = [
 ]
 
 LABELS = ["01", "02", "03", "04", "05"]
-FEATURELIST = str(PROJECT_DIR / "460-featurelistcsv.csv")
+FEATURELIST = str(PROJECT_DIR / "2326featureList.csv")
 # FEATURELIST = str(PROJECT_DIR / "only_in_ctrl3_460.csv")
 MEAN_SPECTRA_CSV = str(OUT_DIR / "mean_spectra.csv")
 
@@ -46,7 +46,7 @@ peak_cfg = PeakWindowConfig(
     snr_threshold=3.0,
     fwhm_min_ppm=3.0,
     fwhm_max_ppm=200.0,
-    valley_ratio_max=0.60,
+    valley_ratio_max=0.50,
     secondary_peak_ratio_max=0.70,
     base_rel_height=0.10,
     require_all_groups=True,
