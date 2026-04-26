@@ -1,0 +1,11 @@
+source_mean_spectra	/p2/zulab/jtian/data/SA/03_removeLow-qualityPeaks/ScilsPeakFilter/output_run_scils_pipeline/mean_spectra.csv
+feature_mz	85.0294000000
+scils_interval_half_width_da	0.0017005880
+search_ppm	10
+search_half_width_da	0.0008502940
+mean_peak_mz	85.0294383231
+01_peak_mz	85.0294383231	01_peak_intensity	321.471903
+02_peak_mz	85.0294383231	02_peak_intensity	334.006289
+03_peak_mz	85.0294383231	03_peak_intensity	338.294736
+04_peak_mz	85.0294383231	04_peak_intensity	345.589021
+05_peak_mz	85.0294383231	05_peak_intensity	358.007205

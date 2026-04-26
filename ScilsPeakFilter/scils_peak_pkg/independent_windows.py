@@ -35,12 +35,16 @@ class PeakWindowConfig:
     featurelist: str
     mean_spectra: str
     outdir: str = "scils_peak_window_out"
+    seed_source: str = "featurelist"  # 'featurelist' or 'auto'
     do_smooth: bool = True
     do_baseline: bool = False
     smooth_window: int = 11
     smooth_polyorder: int = 3
     baseline_window: int = 101
     search_ppm: float = 30.0
+    candidate_ppm: Optional[float] = None
+    candidate_prominence_frac: Optional[float] = None
+    min_candidate_groups: Optional[int] = None
     prominence_frac: float = 0.05
     snr_threshold: float = 3.0
     fwhm_min_ppm: float = 3.0
@@ -50,6 +54,8 @@ class PeakWindowConfig:
     base_rel_height: float = 0.10
     require_all_groups: bool = True
     min_independent_groups: int = 5
+    require_first_group_independent: bool = False
+    max_interval_half_width_da: Optional[float] = None
 
 
 def read_scils_featurelist(path: str) -> Tuple[List[str], pd.DataFrame]:
@@ -230,6 +236,82 @@ def valley_ratio_near_peak(y: np.ndarray, main_idx: int, other_peak_indices: np.
     return left_ratio, right_ratio
 
 
+def _find_local_peak_indices(y: np.ndarray, prominence_frac: float) -> np.ndarray:
+    sigma = robust_sigma(y)
+    prominence = max(float(np.max(y)) * prominence_frac, sigma * 3)
+    peaks, _ = find_peaks(y, prominence=prominence)
+    return peaks
+
+
+def detect_candidate_seed_mzs(
+    mean_df: pd.DataFrame,
+    group_cols: List[str],
+    search_ppm: float,
+    prominence_frac: float,
+    require_all_groups: bool,
+    min_candidate_groups: Optional[int] = None,
+) -> pd.DataFrame:
+    mz_axis = mean_df["mz"].to_numpy()
+    group_matrix = mean_df[group_cols].to_numpy(dtype=float)
+    mean_y = np.nanmean(group_matrix, axis=1)
+
+    mean_peaks = _find_local_peak_indices(mean_y, prominence_frac=prominence_frac)
+    required_groups = len(group_cols) if require_all_groups else (min_candidate_groups or 1)
+    records = []
+
+    for peak_idx in mean_peaks:
+        mean_peak_mz = float(mz_axis[peak_idx])
+        tol_da = ppm_to_da(mean_peak_mz, search_ppm)
+        mask = (mz_axis >= mean_peak_mz - tol_da) & (mz_axis <= mean_peak_mz + tol_da)
+        if mask.sum() < 3:
+            continue
+
+        local_mz = mz_axis[mask]
+        group_peak_mzs = []
+        group_peak_intensities = []
+        found_groups = []
+
+        for group in group_cols:
+            local_y = mean_df.loc[mask, group].to_numpy(dtype=float)
+            local_y = np.nan_to_num(local_y, nan=0.0, posinf=0.0, neginf=0.0)
+            local_peaks = _find_local_peak_indices(local_y, prominence_frac=prominence_frac)
+            if len(local_peaks) == 0:
+                continue
+
+            distances = np.abs(local_mz[local_peaks] - mean_peak_mz)
+            order = np.lexsort((-local_y[local_peaks], distances))
+            apex_idx = int(local_peaks[order[0]])
+            found_groups.append(group)
+            group_peak_mzs.append(float(local_mz[apex_idx]))
+            group_peak_intensities.append(float(local_y[apex_idx]))
+
+        if len(group_peak_mzs) < required_groups:
+            continue
+
+        candidate_mz = float(np.median(group_peak_mzs))
+        records.append({
+            "candidate_mz": candidate_mz,
+            "mean_peak_mz": mean_peak_mz,
+            "n_candidate_groups": len(group_peak_mzs),
+            "candidate_groups": ",".join(found_groups),
+            "group_peak_mzs": ",".join(f"{x:.10f}" for x in group_peak_mzs),
+            "median_group_peak_intensity": float(np.median(group_peak_intensities)),
+        })
+
+    if not records:
+        return pd.DataFrame(columns=[
+            "candidate_mz",
+            "mean_peak_mz",
+            "n_candidate_groups",
+            "candidate_groups",
+            "group_peak_mzs",
+            "median_group_peak_intensity",
+        ])
+
+    candidates = pd.DataFrame(records).sort_values("candidate_mz").reset_index(drop=True)
+    return candidates.drop_duplicates(subset=["candidate_mz"]).reset_index(drop=True)
+
+
 def analyze_group_peak(
     mz_axis: np.ndarray,
     intensity: np.ndarray,
@@ -348,6 +430,8 @@ def analyze_seed_across_groups(
     base_rel_height: float,
     require_all_groups: bool,
     min_independent_groups: int,
+    require_first_group_independent: bool = False,
+    max_interval_half_width_da: Optional[float] = None,
 ) -> Tuple[pd.DataFrame, Dict]:
     mz_axis = mean_df["mz"].to_numpy()
     group_results = []
@@ -382,6 +466,12 @@ def analyze_seed_across_groups(
     else:
         passed = n_independent >= min_independent_groups
 
+    first_group_independent = bool(gdf.iloc[0]["independent"]) if len(gdf) > 0 else False
+    filter_reasons: List[str] = []
+    if require_first_group_independent and not first_group_independent:
+        passed = False
+        filter_reasons.append("first group is not independent")
+
     summary = {
         "seed_mz": seed_mz,
         "all_found": all_found,
@@ -389,6 +479,7 @@ def analyze_seed_across_groups(
         "passed": passed,
         "n_found": n_found,
         "n_independent": n_independent,
+        "first_group_independent": first_group_independent,
         "consensus_peak_mz": np.nan,
         "shared_left_base_mz": np.nan,
         "shared_right_base_mz": np.nan,
@@ -396,6 +487,7 @@ def analyze_seed_across_groups(
         "scils_center_mz": np.nan,
         "scils_interval_half_width_da": np.nan,
         "median_fwhm_ppm": np.nan,
+        "filter_reason": "",
     }
 
     good = gdf[gdf["independent"] == True].copy()
@@ -418,6 +510,13 @@ def analyze_seed_across_groups(
             "scils_interval_half_width_da": float(half_width_for_scils),
         })
 
+        if max_interval_half_width_da is not None:
+            summary["scils_interval_half_width_da"] = min(
+                float(half_width_for_scils),
+                float(max_interval_half_width_da),
+            )
+
+    summary["filter_reason"] = "; ".join(filter_reasons)
     return gdf, summary
 
 
@@ -432,12 +531,97 @@ def build_scils_minimal_import(summary_df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def consolidate_consensus_seed_mzs(summary_df: pd.DataFrame, decimals: int = 6) -> pd.DataFrame:
+    passed = summary_df[summary_df["passed"] == True].copy()
+    if passed.empty:
+        return pd.DataFrame(columns=[
+            "candidate_mz",
+            "consensus_mz_rounded",
+            "source_seed_count",
+            "source_seed_mzs",
+        ])
+
+    passed["consensus_mz_rounded"] = passed["consensus_peak_mz"].round(decimals)
+    records = []
+    for rounded_mz, group in passed.groupby("consensus_mz_rounded", sort=True):
+        records.append({
+            "candidate_mz": float(group["consensus_peak_mz"].median()),
+            "consensus_mz_rounded": float(rounded_mz),
+            "source_seed_count": int(len(group)),
+            "source_seed_mzs": ",".join(f"{x:.10f}" for x in group["seed_mz"].astype(float)),
+        })
+
+    return pd.DataFrame(records)
+
+
 def write_scils_semicolon_csv(df: pd.DataFrame, out_path: str, comments: Optional[List[str]] = None):
     with open(out_path, "w", encoding="utf-8-sig") as f:
         if comments is not None:
             for line in comments:
                 f.write(line if line.endswith("\n") else line + "\n")
         df.to_csv(f, sep=";", index=False)
+
+
+def _empty_group_detail_df() -> pd.DataFrame:
+    return pd.DataFrame(columns=list(GroupPeakResult.__dataclass_fields__.keys()))
+
+
+def _empty_summary_df() -> pd.DataFrame:
+    return pd.DataFrame(columns=[
+        "seed_mz",
+        "all_found",
+        "all_independent",
+        "passed",
+        "n_found",
+        "n_independent",
+        "first_group_independent",
+        "consensus_peak_mz",
+        "shared_left_base_mz",
+        "shared_right_base_mz",
+        "shared_window_width_da",
+        "scils_center_mz",
+        "scils_interval_half_width_da",
+        "median_fwhm_ppm",
+        "filter_reason",
+    ])
+
+
+def analyze_seed_list(
+    seed_list: Sequence[float],
+    processed: pd.DataFrame,
+    group_cols: List[str],
+    config: PeakWindowConfig,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    all_group_rows = []
+    all_summary_rows = []
+
+    for seed_mz in seed_list:
+        gdf, summary = analyze_seed_across_groups(
+            seed_mz=float(seed_mz),
+            mean_df=processed,
+            group_cols=group_cols,
+            search_ppm=config.search_ppm,
+            prominence_frac=config.prominence_frac,
+            snr_threshold=config.snr_threshold,
+            fwhm_min_ppm=config.fwhm_min_ppm,
+            fwhm_max_ppm=config.fwhm_max_ppm,
+            valley_ratio_max=config.valley_ratio_max,
+            secondary_peak_ratio_max=config.secondary_peak_ratio_max,
+            base_rel_height=config.base_rel_height,
+            require_all_groups=config.require_all_groups,
+            min_independent_groups=config.min_independent_groups,
+            require_first_group_independent=config.require_first_group_independent,
+            max_interval_half_width_da=config.max_interval_half_width_da,
+        )
+        all_group_rows.append(gdf)
+        all_summary_rows.append(summary)
+
+    group_detail_df = pd.concat(all_group_rows, ignore_index=True) if all_group_rows else _empty_group_detail_df()
+    summary_df = pd.DataFrame(all_summary_rows) if all_summary_rows else _empty_summary_df()
+    if summary_df.empty:
+        summary_df = _empty_summary_df()
+
+    return group_detail_df, summary_df
 
 
 def run_peak_window_pipeline(config: PeakWindowConfig) -> Dict[str, pd.DataFrame]:
@@ -450,6 +634,9 @@ def run_peak_window_pipeline(config: PeakWindowConfig) -> Dict[str, pd.DataFrame
     group_cols = [c for c in mean_df.columns if c != "mz"]
     if config.require_all_groups:
         config.min_independent_groups = len(group_cols)
+    min_candidate_groups = config.min_candidate_groups
+    if min_candidate_groups is None:
+        min_candidate_groups = config.min_independent_groups
 
     processed = pd.DataFrame({"mz": mean_df["mz"].to_numpy()})
     for g in group_cols:
@@ -464,56 +651,61 @@ def run_peak_window_pipeline(config: PeakWindowConfig) -> Dict[str, pd.DataFrame
         )
         processed[g] = y_corr
 
-    seed_list = feature_df["m/z"].astype(float).tolist()
-    all_group_rows = []
-    all_summary_rows = []
+    seed_source = config.seed_source.lower()
+    if seed_source not in {"auto", "featurelist"}:
+        raise ValueError("seed_source 只能是 'auto' 或 'featurelist'。")
 
-    for seed_mz in seed_list:
-        gdf, summary = analyze_seed_across_groups(
-            seed_mz=seed_mz,
+    if seed_source == "auto":
+        candidate_df = detect_candidate_seed_mzs(
             mean_df=processed,
             group_cols=group_cols,
-            search_ppm=config.search_ppm,
-            prominence_frac=config.prominence_frac,
-            snr_threshold=config.snr_threshold,
-            fwhm_min_ppm=config.fwhm_min_ppm,
-            fwhm_max_ppm=config.fwhm_max_ppm,
-            valley_ratio_max=config.valley_ratio_max,
-            secondary_peak_ratio_max=config.secondary_peak_ratio_max,
-            base_rel_height=config.base_rel_height,
+            search_ppm=config.candidate_ppm if config.candidate_ppm is not None else config.search_ppm,
+            prominence_frac=config.candidate_prominence_frac
+            if config.candidate_prominence_frac is not None else config.prominence_frac,
             require_all_groups=config.require_all_groups,
-            min_independent_groups=config.min_independent_groups,
+            min_candidate_groups=min_candidate_groups,
         )
-        all_group_rows.append(gdf)
-        all_summary_rows.append(summary)
+        candidate_df.to_csv(outdir / "candidate_seeds.csv", index=False)
+        seed_list = candidate_df["candidate_mz"].astype(float).tolist()
+    else:
+        candidate_df = pd.DataFrame({
+            "candidate_mz": feature_df["m/z"].astype(float),
+            "mean_peak_mz": np.nan,
+            "n_candidate_groups": np.nan,
+            "candidate_groups": "",
+            "group_peak_mzs": "",
+            "median_group_peak_intensity": np.nan,
+        })
+        candidate_df.to_csv(outdir / "candidate_seeds.csv", index=False)
+        seed_list = feature_df["m/z"].astype(float).tolist()
 
-    group_detail_df = pd.concat(all_group_rows, ignore_index=True)
-    summary_df = pd.DataFrame(all_summary_rows)
+    raw_group_detail_df, raw_summary_df = analyze_seed_list(seed_list, processed, group_cols, config)
+    consensus_seed_df = consolidate_consensus_seed_mzs(raw_summary_df, decimals=6)
+    final_seed_list = consensus_seed_df["candidate_mz"].astype(float).tolist()
+    group_detail_df, summary_df = analyze_seed_list(final_seed_list, processed, group_cols, config)
 
+    raw_group_detail_df.to_csv(outdir / "group_peak_details_raw.csv", index=False)
+    raw_summary_df.to_csv(outdir / "seed_summary_raw.csv", index=False)
+    consensus_seed_df.to_csv(outdir / "consensus_seeds.csv", index=False)
     group_detail_df.to_csv(outdir / "group_peak_details.csv", index=False)
     summary_df.to_csv(outdir / "seed_summary.csv", index=False)
 
     scils_min_df = build_scils_minimal_import(summary_df)
     write_scils_semicolon_csv(scils_min_df, str(outdir / "scils_import_minimal.csv"))
 
-    passed = summary_df[summary_df["passed"] == True].copy()
-    passed_map = dict(zip(passed["seed_mz"], zip(passed["scils_center_mz"], passed["scils_interval_half_width_da"])))
-
-    patched = feature_df.copy()
-    keep_mask = patched["m/z"].astype(float).isin(passed["seed_mz"].astype(float))
-    patched = patched.loc[keep_mask].copy()
-    patched["Name"] = [f"auto_pk_{i + 1}" for i in range(len(patched))]
-
-    for idx in patched.index:
-        old_mz = float(patched.at[idx, "m/z"])
-        new_center, new_half_width = passed_map[old_mz]
-        patched.at[idx, "m/z"] = new_center
-        patched.at[idx, "Interval Width (+/- Da)"] = new_half_width
+    if seed_source == "featurelist":
+        patched = scils_min_df.copy()
+    else:
+        patched = scils_min_df.copy()
 
     write_scils_semicolon_csv(patched, str(outdir / "scils_featurelist_patched.csv"), comments=comments)
 
     return {
         "processed_mean_spectra": processed,
+        "candidate_seeds": candidate_df,
+        "consensus_seeds": consensus_seed_df,
+        "raw_group_peak_details": raw_group_detail_df,
+        "raw_seed_summary": raw_summary_df,
         "group_peak_details": group_detail_df,
         "seed_summary": summary_df,
         "scils_import_minimal": scils_min_df,

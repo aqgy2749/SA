@@ -36,6 +36,7 @@ peak_cfg = PeakWindowConfig(
     featurelist=FEATURELIST,
     mean_spectra=MEAN_SPECTRA_CSV,
     outdir=str(OUT_DIR),
+    seed_source="featurelist",
     do_smooth=False,
     do_baseline=False,
     smooth_window=11,
